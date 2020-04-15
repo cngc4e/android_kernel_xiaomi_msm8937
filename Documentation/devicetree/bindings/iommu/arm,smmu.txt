@@ -104,6 +104,12 @@ conditions.
 		  a four level page table configuration. Set to use a three
 		  level page table instead.
 
+- qcom,use-aarch32-pagetables:
+                  Some TZ firmwares may not support the switching of pagetable
+                  format to ARMV8L in the secure software. In this case, it is
+                  necessary to specify this switch to ensure AArch32 LPAE
+                  pagetable format.
+
 - qcom,no-asid-retention:
 		  Some hardware may lose internal state for asid after
 		  retention. No cache invalidation operations involving asid
