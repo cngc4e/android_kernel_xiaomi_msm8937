@@ -57,6 +57,7 @@
 		qcom,enable-static-cb;
 		qcom,use-3-lvl-tables;
 		qcom,disable-atos;
+		qcom,use-aarch32-pagetables;
 		#global-interrupts = <0>;
 		#size-cells = <1>;
 		#address-cells = <1>;
