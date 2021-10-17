@@ -22,7 +22,6 @@
 #include <linux/dma-mapping.h>
 #include <linux/dma-buf.h>
 #include <linux/iommu.h>
-#include <linux/qcom_iommu.h>
 #include <linux/platform_device.h>
 #include <ipc/apr.h>
 #include <linux/of_device.h>
@@ -739,7 +738,7 @@ static int msm_audio_smmu_init(struct device *dev)
 	struct dma_iommu_mapping *mapping;
 	int ret;
 
-	mapping = arm_iommu_create_mapping(msm_iommu_get_bus(dev),
+	mapping = arm_iommu_create_mapping(&platform_bus_type,
 					   MSM_AUDIO_ION_VA_START,
 					   MSM_AUDIO_ION_VA_LEN);
 	if (IS_ERR(mapping))
