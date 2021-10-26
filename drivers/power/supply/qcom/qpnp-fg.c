@@ -250,7 +250,7 @@ static struct fg_mem_setting settings[FG_MEM_SETTING_MAX] = {
 	SETTING(CHG_TERM_CURRENT, 0x4F8,   2,      250),
 	SETTING(IRQ_VOLT_EMPTY,	 0x458,   3,      3100),
 	SETTING(CUTOFF_VOLTAGE,	 0x40C,   0,      3200),
-	SETTING(VBAT_EST_DIFF,	 0x000,   0,      100),
+	SETTING(VBAT_EST_DIFF,	 0x000,   0,      30),
 	SETTING(DELTA_SOC,	 0x450,   3,      1),
 	SETTING(BATT_LOW,	 0x458,   0,      4200),
 	SETTING(THERM_DELAY,	 0x4AC,   3,      0),
@@ -2025,6 +2025,18 @@ static void fg_handle_battery_insertion(struct fg_chip *chip)
 	schedule_delayed_work(&chip->update_sram_data, msecs_to_jiffies(0));
 }
 
+#if 1
+static inline int soc_to_setpoint(int soc)
+{
+	return soc;
+}
+#else
+static int soc_to_setpoint(int soc)
+{
+	return DIV_ROUND_CLOSEST(soc * 255, 100);
+}
+#endif
+
 static void batt_to_setpoint_adc(int vbatt_mv, u8 *data)
 {
 	int val;
@@ -2251,8 +2263,10 @@ static int get_prop_capacity(struct fg_chip *chip)
 
 	if (chip->battery_missing)
 		return MISSING_CAPACITY;
+#ifndef CONFIG_MACH_XIAOMI_SANTONI
 	if (!chip->profile_loaded && !chip->use_otp_profile)
 		return DEFAULT_CAPACITY;
+#endif
 	if (chip->charge_full)
 		return FULL_CAPACITY;
 	if (chip->soc_empty) {
@@ -3295,6 +3309,55 @@ done:
 	return rc;
 }
 
+#ifdef CONFIG_MACH_XIAOMI_SANTONI
+static void battery_age_work(struct work_struct *work)
+{
+	struct fg_chip *chip = container_of(work,
+			struct fg_chip,
+			battery_age_work);
+	int rc = 0;
+	u8 reg[4], reg1[4];
+	u32 vin_error = 0, vin_error2 = 0;
+	int capacity = 0;
+	static int count_error = 0;
+
+	estimate_battery_age(chip, &chip->actual_cap_uah);
+
+	pr_info("wingtech battery_age_work count_error=%d\n", count_error);
+
+	rc = fg_mem_read(chip, reg, fg_data[8].address,
+			fg_data[8].len, fg_data[8].offset, 0);
+	if (rc) {
+		pr_err("Tmie 1 Failed to update temp data\n");
+	} else{
+		vin_error = reg[0] | (reg[1] << 8)|(reg[2] << 16) | (reg[3] << 24);
+		pr_info("REG[560]=%x %x %x %x,vin_error=%x\n",
+				reg[0], reg[1], reg[2], reg[3], vin_error);
+
+		capacity = get_prop_capacity(chip);
+		if ((chip->status == POWER_SUPPLY_STATUS_CHARGING) && ((capacity < 100) && capacity >= 85) && (vin_error == 0)) {
+			msleep(2000);
+			rc = fg_mem_read(chip, reg1, fg_data[8].address,
+					fg_data[8].len, fg_data[8].offset, 0);
+
+			if (rc) {
+				pr_err("Time 2 Failed to update temp data\n");
+				vin_error2 = 0xFF;
+			} else {
+				vin_error2 = reg1[0] | (reg1[1] << 8)|(reg1[2] << 16) | (reg1[3] << 24);
+				pr_info("REG2[560]=%x %x %x %x, vin_error=%x\n", reg1[0], reg1[1], reg1[2], reg1[3], vin_error2);
+			}
+			if (vin_error == 0 && vin_error2 == 0) {
+				pr_info("wingtech try to reset FG for error at capcity=%d\n", capacity);
+				count_error++;
+				fg_check_ima_error_handling(chip);
+				pr_info("End! wingtech try to reset FG for error\n");
+			}
+		}
+	}
+}
+
+#else
 static void battery_age_work(struct work_struct *work)
 {
 	struct fg_chip *chip = container_of(work,
@@ -3303,6 +3366,7 @@ static void battery_age_work(struct work_struct *work)
 
 	estimate_battery_age(chip, &chip->actual_cap_uah);
 }
+#endif
 
 static int correction_times[] = {
 	1470,
@@ -6305,6 +6369,48 @@ fail:
 	return -EINVAL;
 }
 
+
+#ifdef CONFIG_MACH_XIAOMI_SANTONI
+#define REDO_BATID_DURING_FIRST_EST	BIT(4)
+static void fg_hw_restart(struct fg_chip *chip)
+{
+	u8 reg, rc;
+	int batt_id;
+	u8 data[4];
+
+
+
+
+	reg = 0x80;
+	fg_masked_write(chip, 0x4150, reg, reg, 1);
+	fg_masked_write(chip, chip->soc_base + SOC_RESTART, 0xFF, 0, 1);
+	mdelay(5);
+
+	reg = REDO_BATID_DURING_FIRST_EST|REDO_FIRST_ESTIMATE;
+	fg_masked_write(chip, chip->soc_base + SOC_RESTART, reg, reg, 1);
+	mdelay(5);
+
+	reg = REDO_BATID_DURING_FIRST_EST | REDO_FIRST_ESTIMATE | RESTART_GO;
+	fg_masked_write(chip, chip->soc_base + SOC_RESTART, reg, reg, 1);
+	mdelay(1000);
+
+	fg_masked_write(chip, chip->soc_base + SOC_RESTART, 0xFF, 0, 1);
+	fg_masked_write(chip, 0x4150, 0x80, 0, 1);
+
+	mdelay(2000);
+
+	rc = fg_mem_read(chip, data, fg_data[FG_DATA_BATT_ID].address,
+			fg_data[FG_DATA_BATT_ID].len, fg_data[FG_DATA_BATT_ID].offset, 0);
+	if (rc) {
+		pr_err("XJB Failed to get sram battery id data\n");
+	} else {
+		fg_data[FG_DATA_BATT_ID].value = data[0] * LSB_8B;
+	}
+	batt_id = get_sram_prop_now(chip, FG_DATA_BATT_ID);
+	pr_err("fg_hw_restart. wingtech after restart battery id = %d\n", batt_id);
+}
+#endif
+
 #define FG_PROFILE_LEN			128
 #define PROFILE_COMPARE_LEN		32
 #define THERMAL_COEFF_ADDR		0x444
@@ -6319,6 +6425,9 @@ static int fg_batt_profile_init(struct fg_chip *chip)
 	const char *data, *batt_type_str;
 	bool tried_again = false, vbat_in_range, profiles_same;
 	u8 reg = 0;
+#ifdef CONFIG_MACH_XIAOMI_SANTONI
+	int value = 0;
+#endif
 
 wait:
 	fg_stay_awake(&chip->profile_wakeup_source);
@@ -6338,6 +6447,14 @@ wait:
 	/* Check whether the charger is ready */
 	if (!is_charger_available(chip))
 		goto reschedule;
+
+#ifdef CONFIG_MACH_XIAOMI_SANTONI
+	value = get_sram_prop_now(chip, FG_DATA_BATT_ID);
+	pr_err("wingtech later init FG_DATA_BATT_ID =%d\n", value);
+	if (!(((value > 85000) && (value < 115000)) || ((value > 57000) && (value < 78000)) || ((value > 24000) && (value < 35000)))) {
+		fg_hw_restart(chip);
+	}
+#endif
 
 	/* Disable charging for a FG cycle before calculating vbat_in_range */
 	if (!chip->charging_disabled) {
@@ -8081,7 +8198,7 @@ static int fg_common_hw_init(struct fg_chip *chip)
 	}
 
 	rc = fg_mem_masked_write(chip, settings[FG_MEM_DELTA_SOC].address, 0xFF,
-			settings[FG_MEM_DELTA_SOC].value,
+			soc_to_setpoint(settings[FG_MEM_DELTA_SOC].value),
 			settings[FG_MEM_DELTA_SOC].offset);
 	if (rc) {
 		pr_err("failed to write delta soc rc=%d\n", rc);

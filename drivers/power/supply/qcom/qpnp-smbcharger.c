@@ -3939,7 +3939,6 @@ struct regulator_ops smbchg_otg_reg_ops = {
 #define USBIN_ADAPTER_9V		0x3
 #define USBIN_ADAPTER_5V_9V_CONT	0x2
 #define USBIN_ADAPTER_5V_UNREGULATED_9V	0x6
-#define HVDCP_EN_BIT			BIT(3)
 static int smbchg_external_otg_regulator_enable(struct regulator_dev *rdev)
 {
 	int rc = 0;
@@ -6403,11 +6402,13 @@ static irqreturn_t batt_cool_handler(int irq, void *_chip)
 
 	smbchg_read(chip, &reg, chip->bat_if_base + RT_STS, 1);
 	chip->batt_cool = !!(reg & COLD_BAT_SOFT_BIT);
-	pr_smb(PR_INTERRUPT, "triggered: 0x%02x\n", reg);
-	smbchg_fastchg_current_comp_set(chip,
-			BATT_COOL_CURRENT);
-	smbchg_float_voltage_comp_set(chip,
-			BATT_COOL_VOLTAGE);
+	pr_smb(PR_INTERRUPT, "triggered: 0x%02x, batt_cool=%d\n", reg, chip->batt_cool);
+	if (chip->batt_cool) {
+		smbchg_fastchg_current_comp_set(chip,
+				BATT_COOL_CURRENT);
+		smbchg_float_voltage_comp_set(chip,
+				BATT_COOL_VOLTAGE);
+	}
 	smbchg_parallel_usb_check_ok(chip);
 	if (chip->batt_psy)
 		power_supply_changed(chip->batt_psy);
@@ -7019,6 +7020,7 @@ static inline int get_bpd(const char *name)
 #define OTG_PIN_CTRL_RID_DIS		0x04
 #define OTG_CMD_CTRL_RID_EN		0x08
 #define AICL_ADC_BIT			BIT(6)
+#define OTG_CURRENT_REG			SMB_MASK(1, 0)
 static void batt_ov_wa_check(struct smbchg_chip *chip)
 {
 	int rc;
@@ -7475,6 +7477,16 @@ static int smbchg_hw_init(struct smbchg_chip *chip)
 			return rc;
 		}
 	}
+
+#ifdef CONFIG_MACH_XIAOMI_SANTONI
+	rc = smbchg_sec_masked_write(chip, chip->otg_base + 0xF3,
+			OTG_CURRENT_REG, 0x2);
+	if (rc < 0) {
+		dev_err(chip->dev, "Couldn't set OTG current config rc = %d\n",
+				rc);
+		return rc;
+	}
+#endif
 
 	if (chip->wa_flags & SMBCHG_BATT_OV_WA)
 		batt_ov_wa_check(chip);
